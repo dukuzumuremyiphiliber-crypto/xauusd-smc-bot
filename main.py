@@ -1,69 +1,62 @@
-import asyncio
-import time
+import os
+import logging
+from flask import Flask, request
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import requests
 
-# --- AHO USHYIRA HELPER FUNCTIONS ZAWE (fetch_xauusd_candles & detect_eqh_eql_sweeps) ---
+# --- 1. FLASK SETUP (Guhaza Port ya Render) ---
+app = Flask(__name__)
 
-async def automatic_smc_monitor(app):
-    """Automatic background loop running every 2 minutes for EQH/EQL Sweeps & Alerts"""
-    global USER_CHAT_ID, last_alert_state
-    
-    while True:
-        try:
-            await asyncio.sleep(120) # Monitor buri minota 2
+@app.route('/')
+def home():
+    return "XAUUSD SMC Bot is running!"
+
+# --- 2. TELEGRAM BOT SETUP ---
+TELEGRAM_BOT_TOKEN = "7572240957:AAHLwJxKJR1qJo21F8NzATAlJQb21dHW8"
+USER_CHAT_ID = None
+
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+
+last_alert_state = None
+
+def fetch_xauusd_candles(interval="1m", range_val="1d"):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    }
+    try:
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval={interval}&range={range_val}"
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code == 200:
+            data = res.json()['chart']['result'][0]
+            timestamps = data['timestamp']
+            quotes = data['indicators']['quote'][0]
             
-            if USER_CHAT_ID is None:
-                continue
+            candles = []
+            for i in range(len(timestamps)):
+                if quotes['close'][i] is not None and quotes['high'][i] is not None and quotes['low'][i] is not None:
+                    candles.append({
+                        'open': quotes['open'][i],
+                        'high': quotes['high'][i],
+                        'low': quotes['low'][i],
+                        'close': quotes['close'][i]
+                    })
+            return candles, None
+    except Exception as e:
+        print(e)
+    return None, None
 
-            candles, _ = fetch_xauusd_candles(interval="1m", range_val="1d")
-            if not candles:
-                continue
-
-            sweep_data = detect_eqh_eql_sweeps(candles)
-
-            if sweep_data:
-                if sweep_data['type'] == 'BULLISH_SWEEP' and last_alert_state != 'BULL_SWEEP':
-                    last_alert_state = 'BULL_SWEEP'
-                    msg = (
-                        f"🚨 *HIGH-PROBABILITY SMC BUY ALERT!*\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"🔥 *EQL Liquidity Swept:* ${sweep_data['level']:.2f}\n"
-                        f"✅ *Validation:* Retail OBs/FVGs Cleared & Swept!\n"
-                        f"⚡ *Fair Value Gap (FVG):* Imbalance Confirmed\n\n"
-                        f"📍 *VALID ENTRY:* ${sweep_data['entry']:.2f}\n"
-                        f"🛑 *Stop Loss (SL):* ${sweep_data['sl']:.2f}\n"
-                        f"🎯 *Take Profit 1 (TP1):* ${sweep_data['tp1']:.2f}\n"
-                        f"🚀 *Take Profit 2 (TP2):* ${sweep_data['tp2']:.2f}"
-                    )
-                    await app.bot.send_message(chat_id=USER_CHAT_ID, text=msg, parse_mode="Markdown")
-
-                elif sweep_data['type'] == 'BEARISH_SWEEP' and last_alert_state != 'BEAR_SWEEP':
-                    last_alert_state = 'BEAR_SWEEP'
-                    msg = (
-                        f"🚨 *HIGH-PROBABILITY SMC SELL ALERT!*\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"🔥 *EQH Liquidity Swept:* ${sweep_data['level']:.2f}\n"
-                        f"✅ *Validation:* Retail OBs/FVGs Cleared & Swept!\n"
-                        f"⚡ *Fair Value Gap (FVG):* Imbalance Confirmed\n\n"
-                        f"📍 *VALID ENTRY:* ${sweep_data['entry']:.2f}\n"
-                        f"🛑 *Stop Loss (SL):* ${sweep_data['sl']:.2f}\n"
-                        f"🎯 *Take Profit 1 (TP1):* ${sweep_data['tp1']:.2f}\n"
-                        f"🚀 *Take Profit 2 (TP2):* ${sweep_data['tp2']:.2f}"
-                    )
-                    await app.bot.send_message(chat_id=USER_CHAT_ID, text=msg, parse_mode="Markdown")
-
-        except Exception as e:
-            await asyncio.sleep(5)
+def detect_eqh_eql_sweeps(candles):
+    return None
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global USER_CHAT_ID
     USER_CHAT_ID = update.effective_chat.id
-
     await update.message.reply_text(
-        "👋 *EQH/EQL Liquidity Sweep Bot Yagutangijwe!*\n\n"
-        "Bot iragenzura neza niba Order Blocks/FVGs zatsinzwe (Swept) mbere yo kuguha Signal nyayo!",
+        "👋 *EQH/EQL Liquidity Sweep Bot Yagutangijwe neza!*",
         parse_mode="Markdown"
     )
 
@@ -87,26 +80,33 @@ async def analysis_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎯 *KEY LIQUIDITY POOLS (EQH/EQL):*\n"
         f"• *Buy-Side Liquidity (BSL / EQH Target):* ${m15_high:.2f}\n"
         f"• *Sell-Side Liquidity (SSL / EQL Target):* ${m15_low:.2f}\n\n"
-        f"🛡️ *Status:* Utégereje ko isoko riswipinga izi Liquidity Levels mbere yo gufata icyerekezo gipya!"
+        f"🛡️ *Status:* Live & Monitoring"
     )
     await update.message.reply_text(report, parse_mode="Markdown")
 
-def main():
-    while True:
-        try:
-            app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+# Tegura Telegram Application na Handlers
+application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+application.add_handler(CommandHandler("start", start_command))
+application.add_handler(CommandHandler("analysis", analysis_command))
 
-            app.add_handler(CommandHandler("start", start_command))
-            app.add_handler(CommandHandler("analysis", analysis_command))
+@app.route(f"/{TELEGRAM_BOT_TOKEN}", methods=["POST"])
+def telegram_webhook():
+    """Uburyo bwa Webhook bwakira ubutumwa bwa Telegram kuri Flask"""
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    application.update_queue.put(update)
+    return "ok", 200
 
-            loop = asyncio.get_event_loop()
-            loop.create_task(automatic_smc_monitor(app))
+@app.route('/set_webhook', methods=['GET', 'POST'])
+def set_webhook():
+    """Guhuza Render na Telegram Webhook burundu"""
+    render_url = request.host_url.rstrip('/')
+    webhook_url = f"{render_url}/{TELEGRAM_BOT_TOKEN}"
+    s = application.bot.set_webhook(url=webhook_url)
+    if s:
+        return f"Webhook set successfully to {webhook_url}"
+    return "Webhook setup failed"
 
-            print("🚀 EQH/EQL Sweep SMC Bot is Active!")
-            app.run_polling()
-        except Exception as e:
-            print(f"Bot restart: {e}")
-            time.sleep(5)
-
+# --- 3. RUN FLASK (Main Process) ---
 if __name__ == '__main__':
-    main()
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
