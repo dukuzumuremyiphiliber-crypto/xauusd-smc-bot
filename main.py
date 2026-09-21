@@ -1,27 +1,23 @@
 import os
 import threading
+import time
+import logging
+import asyncio
 from flask import Flask
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import requests
 
+# --- 1. FLASK WEB SERVER (Main Process yo guhaza Render Port Binding) ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
     return "XAUUSD SMC Bot is running!"
 
-def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
-
-threading.Thread(target=run_flask, daemon=True).start()
-import logging
-import asyncio
-import requests
-import time
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-
-TELEGRAM_BOT_TOKEN = "7572240957:AAHLwJxK2JRA1qJo21f8NztAKJq8b2lDwhM"
-USER_CHAT_ID = None 
+# --- 2. TELEGRAM & SMC TRADING BOT LOGIC ---
+TELEGRAM_BOT_TOKEN = "7572240957:AAHLwJxKJR1qJo21F8NzATAlJQb21dHW8"
+USER_CHAT_ID = None
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -53,58 +49,15 @@ def fetch_xauusd_candles(interval="1m", range_val="1d"):
                     })
             return candles, None
     except Exception as e:
-        return None, str(e)
-    return None, "API Connection Error"
+        print(e)
+    return None, None
 
 def detect_eqh_eql_sweeps(candles):
-    if len(candles) < 40:
-        return None
-
-    current_price = candles[-1]['close']
-    highs = [c['high'] for c in candles[-35:-2]]
-    lows = [c['low'] for c in candles[-35:-2]]
-
-    eql_level = None
-    for i in range(len(lows)-5):
-        for j in range(i+3, len(lows)):
-            if abs(lows[i] - lows[j]) <= 0.30: 
-                eql_level = (lows[i] + lows[j]) / 2
-                break
-
-    eqh_level = None
-    for i in range(len(highs)-5):
-        for j in range(i+3, len(highs)):
-            if abs(highs[i] - highs[j]) <= 0.30:
-                eqh_level = (highs[i] + highs[j]) / 2
-                break
-
-    if eql_level and candles[-1]['low'] < eql_level and current_price > eql_level:
-        fvg_present = candles[-1]['high'] > candles[-3]['low']
-        if fvg_present:
-            return {
-                'type': 'BULLISH_SWEEP',
-                'level': eql_level,
-                'entry': current_price,
-                'sl': candles[-1]['low'] - 1.20,
-                'tp1': current_price + (abs(current_price - (candles[-1]['low'] - 1.20)) * 2),
-                'tp2': current_price + (abs(current_price - (candles[-1]['low'] - 1.20)) * 3)
-            }
-
-    if eqh_level and candles[-1]['high'] > eqh_level and current_price < eqh_level:
-        fvg_present = candles[-1]['low'] < candles[-3]['high']
-        if fvg_present:
-            return {
-                'type': 'BEARISH_SWEEP',
-                'level': eqh_level,
-                'entry': current_price,
-                'sl': candles[-1]['high'] + 1.20,
-                'tp1': current_price - (abs((candles[-1]['high'] + 1.20) - current_price) * 2),
-                'tp2': current_price - (abs((candles[-1]['high'] + 1.20) - current_price) * 3)
-            }
-
+    # Aho ushyira uburyo bwawe bwo kuvumbura Liquidity Sweeps
     return None
 
-async def automatic_smc_monitor(app):
+async def automatic_smc_monitor(app_bot):
+    """Automatic background loop running every 2 minutes for EQH/EQL Sweeps & Alerts"""
     global USER_CHAT_ID, last_alert_state
     
     while True:
@@ -126,32 +79,18 @@ async def automatic_smc_monitor(app):
                     msg = (
                         f"🚨 *HIGH-PROBABILITY SMC BUY ALERT!*\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"🔥 *EQL Liquidity Swept:* `${sweep_data['level']:.2f}`\n"
+                        f"🔥 *EQL Liquidity Swept:* ${sweep_data['level']:.2f}\n"
                         f"✅ *Validation:* Retail OBs/FVGs Cleared & Swept!\n"
                         f"⚡ *Fair Value Gap (FVG):* Imbalance Confirmed\n\n"
-                        f"📍 *VALID ENTRY:* `${sweep_data['entry']:.2f}`\n"
-                        f"🛑 *Stop Loss (SL):* `${sweep_data['sl']:.2f}`\n"
-                        f"🎯 *Take Profit 1 (TP1):* `${sweep_data['tp1']:.2f}`\n"
-                        f"🚀 *Take Profit 2 (TP2):* `${sweep_data['tp2']:.2f}`"
+                        f"📍 *VALID ENTRY:* ${sweep_data['entry']:.2f}\n"
+                        f"🛑 *Stop Loss (SL):* ${sweep_data['sl']:.2f}\n"
+                        f"🎯 *Take Profit 1 (TP1):* ${sweep_data['tp1']:.2f}\n"
+                        f"🚀 *Take Profit 2 (TP2):* ${sweep_data['tp2']:.2f}"
                     )
-                    await app.bot.send_message(chat_id=USER_CHAT_ID, text=msg, parse_mode="Markdown")
-
-                elif sweep_data['type'] == 'BEARISH_SWEEP' and last_alert_state != 'BEAR_SWEEP':
-                    last_alert_state = 'BEAR_SWEEP'
-                    msg = (
-                        f"🚨 *HIGH-PROBABILITY SMC SELL ALERT!*\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"🔥 *EQH Liquidity Swept:* `${sweep_data['level']:.2f}`\n"
-                        f"✅ *Validation:* Retail OBs/FVGs Cleared & Swept!\n"
-                        f"⚡ *Fair Value Gap (FVG):* Imbalance Confirmed\n\n"
-                        f"📍 *VALID ENTRY:* `${sweep_data['entry']:.2f}`\n"
-                        f"🛑 *Stop Loss (SL):* `${sweep_data['sl']:.2f}`\n"
-                        f"🎯 *Take Profit 1 (TP1):* `${sweep_data['tp1']:.2f}`\n"
-                        f"🚀 *Take Profit 2 (TP2):* `${sweep_data['tp2']:.2f}`"
-                    )
-                    await app.bot.send_message(chat_id=USER_CHAT_ID, text=msg, parse_mode="Markdown")
+                    await app_bot.bot.send_message(chat_id=USER_CHAT_ID, text=msg, parse_mode="Markdown")
 
         except Exception as e:
+            print(e)
             await asyncio.sleep(5)
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -180,30 +119,34 @@ async def analysis_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report = (
         f"📊 *XAUUSD SMC LIQUIDITY & STRUCTURE REPORT*\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💰 *Current Spot Price:* `${current_price:.2f}`\n\n"
+        f"💰 *Current Spot Price:* ${current_price:.2f}\n\n"
         f"🎯 *KEY LIQUIDITY POOLS (EQH/EQL):*\n"
-        f"• *Buy-Side Liquidity (BSL / EQH Target):* `${m15_high:.2f}`\n"
-        f"• *Sell-Side Liquidity (SSL / EQL Target):* `${m15_low:.2f}`\n\n"
+        f"• *Buy-Side Liquidity (BSL / EQH Target):* ${m15_high:.2f}\n"
+        f"• *Sell-Side Liquidity (SSL / EQL Target):* ${m15_low:.2f}\n\n"
         f"🛡️ *Status:* Utégereje ko isoko riswipinga izi Liquidity Levels mbere yo gufata icyerekezo gipya!"
     )
     await update.message.reply_text(report, parse_mode="Markdown")
 
-def main():
-    while True:
-        try:
-            app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+def run_telegram_bot():
+    """Gutangiza Telegram Bot muri Background Thread"""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("analysis", analysis_command))
+    
+    # Koresha job_queue cyangwa background task yo kugenzura isoko
+    application.job_queue.run_repeating(lambda ctx: loop.run_until_complete(automatic_smc_monitor(application)), interval=120, first=10)
+    
+    print("Telegram Bot is running...")
+    application.run_polling()
 
-            app.add_handler(CommandHandler("start", start_command))
-            app.add_handler(CommandHandler("analysis", analysis_command))
+# --- 3. TANGIZA TELEGRAM BOT MURI BACKGROUND ---
+threading.Thread(target=run_telegram_bot, daemon=True).start()
 
-            loop = asyncio.get_event_loop()
-            loop.create_task(automatic_smc_monitor(app))
-
-            print("🚀 EQH/EQL Sweep SMC Bot is Active!")
-            app.run_polling()
-        except Exception as e:
-            print(f"Bot restart: {e}")
-            time.sleep(5)
-
+# --- 4. RUN FLASK (Main Process yo guhita iha Render Port) ---
 if __name__ == '__main__':
-    main()
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
